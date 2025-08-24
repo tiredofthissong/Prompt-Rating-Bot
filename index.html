@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CLEAR Prompt Rater (Mini Bot) — v2</title>
+<meta name="theme-color" content="#111" />
+<style>
+  body { font-family: -apple-system, system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; line-height: 1.45; }
+  h1 { margin-bottom: 0; }
+  .sub { color: #555; margin-top: 4px; }
+  textarea { width: 100%; min-height: 180px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid #ccc; border-radius: 8px; }
+  .row { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 16px; }
+  button { padding: 10px 14px; border-radius: 8px; border: 1px solid #444; background: #111; color: #fff; cursor: pointer; }
+  button.secondary { background: #fff; color:#111; border-color:#aaa; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }
+  .card { border:1px solid #e3e3e3; border-radius: 10px; padding: 12px; background: #fafafa; }
+  .score { font-size: 28px; font-weight: 700; }
+  .kpi { display:flex; align-items:center; justify-content:space-between; }
+  .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; border:1px solid #ddd; background:#fff; }
+  .good { color: #166534; }
+  .warn { color: #92400e; }
+  .bad  { color: #991b1b; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
+  details { background:#fff; border:1px dashed #ddd; border-radius:8px; padding:10px; }
+  .small { font-size: 12px; color:#666; }
+  .muted { color:#666; }
+  noscript { display:block; margin-top: 16px; padding: 12px; background: #fff3cd; border:1px solid #ffeeba; border-radius: 8px; }
+</style>
+</head>
+<body>
+  <h1>CLEAR Prompt Rater</h1>
+  <div class="sub">Rates your prompt on <b>C</b>ontext, <b>L</b>imits, <b>E</b>xamples, <b>A</b>ction, <b>R</b>efine — and flags common pitfalls.</div>
+
+  <noscript>
+    JavaScript appears to be disabled in this viewer. Open this page in a normal browser tab.
+  </noscript>
+
+  <div class="row">
+    <label for="prompt"><b>Your prompt</b></label>
+    <textarea id="prompt" placeholder="Paste or write your prompt here..."></textarea>
+    <div>
+      <button id="rate" type="button">Rate Prompt</button>
+      <button id="example" class="secondary" type="button">Insert Example</button>
+    </div>
+  </div>
+
+  <div id="results" style="display:none;">
+    <div class="grid">
+      <div class="card">
+        <div class="kpi"><div><b>Overall</b></div><div class="pill mono" id="gradeLabel">—</div></div>
+        <div class="score" id="overall">—</div>
+        <div class="small muted">Weighted sum (each CLEAR component 0–20 = 100 total)</div>
+      </div>
+      <div class="card"><b>C — Context</b><div id="cScore" class="score">—</div><div id="cNotes" class="small"></div></div>
+      <div class="card"><b>L — Limits</b><div id="lScore" class="score">—</div><div id="lNotes" class="small"></div></div>
+      <div class="card"><b>E — Examples</b><div id="eScore" class="score">—</div><div id="eNotes" class="small"></div></div>
+      <div class="card"><b>A — Action</b><div id="aScore" class="score">—</div><div id="aNotes" class="small"></div></div>
+      <div class="card"><b>R — Refine</b><div id="rScore" class="score">—</div><div id="rNotes" class="small"></div></div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <b>Pitfalls detected</b>
+        <ul id="pitfalls"></ul>
+        <div class="small muted">Checks: vagueness, conflicting asks, overload, hallucination risk, unstructured output.</div>
+      </div>
+      <div class="card">
+        <b>Auto-suggested rewrite (CLEAR)</b>
+        <div id="rewrite" class="mono small"></div>
+      </div>
+    </div>
+
+    <details>
+      <summary>What’s being checked?</summary>
+      <ul>
+        <li><b>Context</b>: role (“you are a”), audience (“for beginners”), domain (“in Python”), purpose (“goal is”).</li>
+        <li><b>Limits</b>: length caps (words, bullets, sentences), format (JSON, table), tone/style.</li>
+        <li><b>Examples</b>: “example”, “e.g.”, “like this”, few-shot patterns.</li>
+        <li><b>Action</b>: verbs (“summarize, compare, generate, extract, classify, write…”).</li>
+        <li><b>Refine</b>: guardrails (“no fluff”, “cite sources”, “step-by-step”, “use only provided data”, “avoid speculation”).</li>
+      </ul>
+      <div class="small muted">All scoring is heuristic + keyword-based (no external calls).</div>
+    </details>
+  </div>
+
+<script>
+(function(){
+  function scorePrompt(text) {
+    const t = text.toLowerCase();
+
+    const hasRole = /(you are a|you are an|as a |act as |role:)/.test(t);
+    const hasAudience = /(for (beginners|experts|executives|students)|audience:)/.test(t);
+    const hasDomain = /(in python|in sql|in javascript|for sales|history|finance|marketing|legal|medical|data)/.test(t);
+    const hasPurpose = /(goal|purpose|so that|why)/.test(t);
+    let cPoints = (hasRole?5:0) + (hasAudience?5:0) + (hasDomain?5:0) + (hasPurpose?5:0);
+
+    const hasLength = /(words|sentences|bullets|bullet points|max|min|no more than|\d+\s*(words|sentences|bullets))/i.test(text);
+    const hasFormat = /(json|table|markdown|csv|yaml|schema|fields:|columns:)/.test(t);
+    const hasTone = /(tone|style|voice|formal|casual|concise|friendly|executive)/.test(t);
+    let lPoints = (hasLength?7:0) + (hasFormat?7:0) + (hasTone?6:0);
+
+    const hasExamples = /(example|e\.g\.|for instance|like this|few-shot|shots:|demo:|sample:)/.test(t);
+    const hasQuotedBlock = /["“”'`].{8,}["“”'`]/.test(text);
+    let ePoints = (hasExamples?12:0) + (hasQuotedBlock?8:0);
+
+    const actionVerbs = /(summarize|explain|compare|generate|classify|extract|rewrite|draft|design|analyze|evaluate|translate|debug|plan|list|outline|simulate|roleplay|write|create|compute)/;
+    const hasAction = actionVerbs.test(t);
+    const startsWithVerb = /^(summarize|explain|write|create|generate|list|extract|classify|compare)\b/.test(t.trim());
+    let aPoints = (hasAction?12:0) + (startsWithVerb?8:0);
+
+    const hasGuardrails = /(no fluff|avoid speculation|cite sources|step[- ]?by[- ]?step|use only provided data|if unsure|ask clarifying|be explicit|show work|chain of thought|do not|must|strictly)/.test(t);
+    const hasAccuracy = /(accurate|factual|verified|nonfiction|grounded)/.test(t);
+    let rPoints = (hasGuardrails?14:0) + (hasAccuracy?6:0);
+
+    const C = Math.max(0, Math.min(20, cPoints));
+    const L = Math.max(0, Math.min(20, lPoints));
+    const E = Math.max(0, Math.min(20, ePoints));
+    const A = Math.max(0, Math.min(20, aPoints));
+    const R = Math.max(0, Math.min(20, rPoints));
+
+    const pitfalls = [];
+    if (!hasAction) pitfalls.push("No clear action verb.");
+    if (!(hasLength || hasFormat)) pitfalls.push("No output limits or format spec.");
+    const conflicting = /(short|concise).*(comprehensive|in depth|thorough)|(comprehensive|in depth|thorough).*(short|concise)/.test(t);
+    if (conflicting) pitfalls.push("Conflicting limits (short vs. comprehensive).");
+    const overload = (t.match(/ and /g) || []).length > 5 || (t.match(/, /g) || []).length > 15;
+    if (overload) pitfalls.push("Overloaded with too many asks.");
+    const hallucinationRisk = /(without sources|make up|invent)/.test(t) || (!hasExamples && !hasGuardrails && /latest|today|current|prices|news|stats/.test(t));
+    if (hallucinationRisk) pitfalls.push("Potential hallucination risk (time-sensitive without sources/guards).");
+    const structureRisk = !hasFormat && !/(bullet|numbered|headings|sections)/.test(t);
+    if (structureRisk) pitfalls.push("Might produce unstructured wall of text.");
+
+    const overall = C + L + E + A + R;
+    let label = "Needs Work";
+    if (overall >= 85) label = "Excellent";
+    else if (overall >= 70) label = "Strong";
+    else if (overall >= 55) label = "Decent";
+
+    const rewrite = [
+      (hasRole ? "" : "You are a <role> "),
+      (hasAudience ? "" : "for <audience> "),
+      (hasDomain ? "" : "working in <domain>. "),
+      (hasPurpose ? "" : "The goal is <purpose>. "),
+      (hasAction ? "" : "Please summarize the <subject>. "),
+      (hasLength ? "" : "Limit to <N> bullets or <X> words. "),
+      (hasFormat ? "" : "Output as <format> (e.g., JSON/Markdown table). "),
+      (hasTone ? "" : "Tone: <tone>. "),
+      (hasExamples ? "" : "Example: \"<mini example>\" "),
+      (hasGuardrails ? "" : "Avoid speculation; use only provided data; if unsure, ask a clarifying question; be step-by-step; cite sources when applicable.")
+    ].join("");
+
+    return { C, L, E, A, R, overall, label, pitfalls, rewrite };
+  }
+
+  function byId(id){ return document.getElementById(id); }
+
+  function init(){
+    const rateBtn = byId('rate');
+    const exBtn = byId('example');
+    if (!rateBtn || !exBtn) { console.error('Buttons not found.'); return; }
+
+    rateBtn.addEventListener('click', () => {
+      const pEl = byId('prompt');
+      if (!pEl) return;
+      const p = pEl.value.trim();
+      if (!p) { alert('Please enter a prompt.'); return; }
+      const res = scorePrompt(p);
+      byId('results').style.display = 'block';
+      byId('overall').textContent = res.overall;
+      byId('gradeLabel').textContent = res.label;
+      byId('cScore').textContent = res.C;
+      byId('lScore').textContent = res.L;
+      byId('eScore').textContent = res.E;
+      byId('aScore').textContent = res.A;
+      byId('rScore').textContent = res.R;
+      byId('cNotes').textContent = 'Context strength (role/audience/domain/purpose).';
+      byId('lNotes').textContent = 'Limits found (length/format/tone).';
+      byId('eNotes').textContent = 'Presence of examples or quoted anchors.';
+      byId('aNotes').textContent = 'Action verbs and clarity.';
+      byId('rNotes').textContent = 'Guardrails for accuracy and reasoning.';
+      const pitfallsList = byId('pitfalls');
+      pitfallsList.innerHTML = '';
+      if (res.pitfalls.length === 0) {
+        const li = document.createElement('li');
+        li.textContent = 'No major pitfalls detected.';
+        li.className = 'good';
+        pitfallsList.appendChild(li);
+      } else {
+        res.pitfalls.forEach(p => {
+          const li = document.createElement('li');
+          li.textContent = p;
+          pitfallsList.appendChild(li);
+        });
+      }
+      byId('rewrite').textContent = res.rewrite;
+    });
+
+    exBtn.addEventListener('click', () => {
+      const ex = `You are a data coach for new SDRs working in B2B SaaS. The goal is to help them find pipeline opportunities fast.
+Please analyze this CSV and summarize top 3 prospecting insights. Limit to 5 bullets, 120 words max. Output as a Markdown table with columns: Insight | Why it matters | Action.
+Tone: concise, executive-friendly.
+Example: "Book meetings by prioritizing accounts with >3 pageviews in past week."
+Avoid speculation; use only provided data; if unsure, ask a clarifying question; be step-by-step; cite sources when applicable.`;
+      const pEl = byId('prompt');
+      if (pEl) pEl.value = ex;
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>
